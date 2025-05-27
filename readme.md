@@ -8,7 +8,7 @@
 conda create -n snake python=3.9.16
 conda activate snake
 
-conda install pytorch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 pytorch-cuda=12.1 -c pytorch -c nvidia
+conda install pytorch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 pytorch-cuda=11.8 -c pytorch -c nvidia
 
 pip install -r requirements.txt
 ```
