@@ -1,0 +1,8 @@
+numpy==1.26.0
+scipy==1.11.3
+gymnasium
+stablebaselines3
+shimmy>=2.0
+tqdm
+rich
+tensorboard
