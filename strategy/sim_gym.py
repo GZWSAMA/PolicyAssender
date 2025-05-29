@@ -294,7 +294,7 @@ class CombatGymEnv(gym.Env):
         truncated = False
         obs = self._get_obs()
         self.current_step += 1 
-        print(f"current_step: {self.current_step}, reward: {reward}, done: {done}")
+        # print(f"current_step: {self.current_step}, reward: {reward}, done: {done}")
 
         return obs, reward, done, truncated, {}
     def render(self):

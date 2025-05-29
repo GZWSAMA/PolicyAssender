@@ -9,6 +9,11 @@ from env_basic.simulation_env import CombatEnv
 from SimArg import InitialData, FighterDataIn, num_fighter
 import os
 
+# ===== 新增参数：是否继续训练 =====
+continue_training = True  # 设置为 True 表示继续训练；False 表示从头开始
+pretrained_model_path = "models/ppo_combat_best/best_model.zip"
+# ==================================
+
 # 创建基础 CombatEnv 实例（用于驱动底层仿真）
 data_initial = InitialData()
 datain = [FighterDataIn() for m in range(num_fighter)]
@@ -44,30 +49,36 @@ eval_env = Monitor(eval_env)
 # 可选：添加评估回调
 eval_callback = EvalCallback(
     eval_env,
-    eval_freq=1000,               # 每 1000 步评估一次
+    eval_freq=10000,               # 每 10000 步评估一次
     best_model_save_path=model_save_path + "_best",
     deterministic=True,
     render=False
 )
 
-# 构建 PPO 模型
-model = PPO(
-    "MlpPolicy",
-    env,
-    policy_kwargs=dict(
-        net_arch=[256, 256]  # 使用两层隐藏层，每层256个神经元
-    ),
-    verbose=1,
-    tensorboard_log=log_dir,
-    learning_rate=3e-4,
-    n_steps=2048,
-    ent_coef=0.01,
-    batch_size=64,
-    n_epochs=10,
-    clip_range=0.2,
-    gamma=0.99,
-    device='cuda' if th.cuda.is_available() else 'cpu'  # 使用 CPU 进行训练
-)
+# ===== 加载模型逻辑调整 =====
+if continue_training and os.path.exists(pretrained_model_path):
+    print(f"Loading pretrained model from {pretrained_model_path}")
+    model = PPO.load(pretrained_model_path, env=env, device='cuda' if th.cuda.is_available() else 'cpu')
+else:
+    print("Training from scratch.")
+    model = PPO(
+        "MlpPolicy",
+        env,
+        policy_kwargs=dict(
+            net_arch=[256, 256]  # 使用两层隐藏层，每层256个神经元
+        ),
+        verbose=1,
+        tensorboard_log=log_dir,
+        learning_rate=3e-4,
+        n_steps=2048,
+        ent_coef=0.01,
+        batch_size=64,
+        n_epochs=10,
+        clip_range=0.2,
+        gamma=0.99,
+        device='cuda' if th.cuda.is_available() else 'cpu'  # 使用 CPU 进行训练
+    )
+# ============================
 
 # 开始训练，并添加进度条回调
 model.learn(
