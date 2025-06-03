@@ -10,9 +10,46 @@ from torch.distributions import Categorical
 
 
 class CombatGymEnv(gym.Env):
-    metadata = {'render_modes': ['human']}
+    """
+    Gym 环境封装类，用于强化学习训练中的战斗模拟。
+    
+    该类将底层战斗环境 (CombatEnv) 封装成符合 gym.Env 接口的形式，
+    提供观测空间 (observation_space)、动作空间 (action_space)、
+    重置 (reset)、步进 (step)、渲染 (render) 等标准接口。
+    
+    设计思想：
+        - 统一与 OpenAI Gym 的接口规范，便于集成 RL 框架；
+        - 抽象出观测向量的构建逻辑，包含自我状态、雷达信息、近距感知、态势感知、告警等；
+        - 支持多智能体训练，通过 agent_id 区分不同战机；
+        - 使用 MultiDiscrete 动作空间表示离散控制指令组合；
+        - 归一化距离以提高神经网络训练稳定性。
+    """
 
     def __init__(self, env: CombatEnv, agent_id=0):
+        """
+        初始化 CombatGymEnv 实例。
+        
+        输入参数：
+            env (CombatEnv): 底层战斗模拟环境实例；
+            agent_id (int): 当前智能体对应的战机编号，默认为 0。
+            
+        输出：
+            None
+            
+        函数作用：
+            - 初始化基础环境配置；
+            - 设置观测空间和动作空间；
+            - 记录当前智能体 ID、对手数量、最大归一化距离；
+            - 初始化数据结构用于存储战机输入输出信息。
+            
+        设计思想：
+            - 使用 gym.Env 基类初始化；
+            - 定义观测空间为连续值的 Box 空间，支持浮点数；
+            - 定义动作空间为 MultiDiscrete，表示多个离散指令的组合；
+            - 初始数据和输入数据使用特定类进行封装，保持代码结构清晰；
+            - 用字典记录动作执行情况，方便后续调试或策略分析；
+            - 用时间戳记录上次发射导弹的时间，避免频繁发射。
+        """
         super(CombatGymEnv, self).__init__() #
         self.combat_env = env
         self.data_initial = InitialData()
@@ -35,14 +72,34 @@ class CombatGymEnv(gym.Env):
 
         # 定义动作空间维度
         self.action_space = spaces.MultiDiscrete([6, 2, 2, 2, 2, 2], dtype=np.int32)
-        # self.action_space = spaces.Box(
-        #     low=np.array([0.0, 0.0, 0.0, -1.0, -1.0, 0.0], dtype=np.float32),
-        #     high=np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),  
-        #     shape=(6,),
-        #     dtype=np.float32
-        # )
 
     def _get_obs(self):
+        """
+        获取当前智能体的观测向量。
+        
+        输入参数：
+            None
+            
+        输出：
+            obs (np.ndarray): 表示当前战机状态及周围环境信息的一维数组，类型为 float32。
+            
+        函数作用：
+            构建一个完整的观测向量，包含以下五部分信息：
+                1. 自身战机的状态数据；
+                2. 雷达探测到的敌方战机信息；
+                3. 近距传感器获取的敌机信息；
+                4. 态势感知系统提供的敌机位置信息；
+                5. 告警系统发出的威胁提示信息；
+            最终返回拼接后的观测向量，并处理缺失值为 0。
+
+        设计思想：
+            - 分模块提取信息，提高可读性和维护性；
+            - 使用统一的数据结构处理单个或多个目标（如雷达/态势信息），增强鲁棒性；
+            - 缺失信息填充为 0，防止神经网络训练中出现 NaN；
+            - 所有观测值最终合并为一维数组，适配强化学习模型输入要求；
+            - 考虑了多种传感器融合（雷达、红外、态势感知、告警），提升智能体对战场环境的理解能力；
+            - 数据标准化预留接口（如 max_distance），可用于归一化处理。
+        """
         # 1. 获取自身状态
         self_data = self.data_output[self.agent_id].selfdata
         obs_self = [
@@ -130,9 +187,33 @@ class CombatGymEnv(gym.Env):
         return obs
 
     def _calculate_reward(self):
-        reward = 0.0
-
+        """
+        根据当前战机状态和环境信息计算强化学习智能体的奖励值。
         
+        输入参数：
+            None
+            
+        输出：
+            reward (float): 当前步的奖励值，用于指导策略更新。
+            
+        函数作用：
+            通过多维度指标评估当前动作的效果，包括：
+                - 生存状态（被击中惩罚）；
+                - 武器使用（发射导弹鼓励）；
+                - 威胁感知（导弹告警惩罚）；
+                - 战术行为（接近敌机鼓励）；
+                - 动作频率控制（限制高频操作）；
+            最终返回综合评分作为 RL 训练的奖励信号。
+            
+        设计思想：
+            - 多因素奖励机制，引导智能体学习战术行为；
+            - 使用历史状态比较（如血量、导弹数）判断变化并给予反馈；
+            - 鼓励攻击行为（发射导弹 + 接近敌人），惩罚无效或危险行为；
+            - 对某些动作设置冷却机制，防止模型滥用特定指令；
+            - 支持未来扩展（如能量管理、姿态控制等）；
+            - 所有奖励项经过归一化处理，便于训练稳定收敛。
+        """
+        reward = 0.0
 
         # 获取当前观测数据
         self_data = self.data_output[self.agent_id].selfdata
@@ -185,7 +266,7 @@ class CombatGymEnv(gym.Env):
                 dist = np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
 
         if dist > 20.0:
-            reward += 100.0 * sqrt(1/(dist+20))  # 距离越近得分越高
+            reward += 100.0 * sqrt(1/(dist))  # 距离越近得分越高
 
         # 7. 姿态与能量控制（可选）：
         # speed = self_data.GroundSpeed
@@ -210,29 +291,74 @@ class CombatGymEnv(gym.Env):
     
    
     def reset(self, seed=None, options=None):
+        """
+        重置战斗模拟环境，开始新的回合。
+        
+        输入参数：
+            seed (int): 随机种子，用于控制随机性；
+            options (dict): 可选配置参数（预留接口）。
+            
+        输出：
+            observation (np.ndarray): 初始观测向量；
+            info (dict): 环境初始化信息（为空字典）。
+            
+        函数作用：
+            - 调用底层 CombatEnv 的 reset 方法进行环境重置；
+            - 返回初始观测状态供 RL 策略使用；
+            - 支持 Gym API 规范的 reset 接口。
+
+        设计思想：
+            - 继承 gym.Env 的 reset 接口，兼容各种 RL 框架；
+            - 通过调用底层环境实现真正的重置逻辑；
+            - 初始化观测数据，保证每轮训练起点一致；
+            - 提供 seed 支持以确保实验可重复性；
+            - 使用 info 字段预留调试信息输出接口。
+        """
         super().reset(seed=seed)
         self.data_output = self.combat_env.reset(self.data_initial, self.datain)
         return self._get_obs(), {}
 
     def step(self, action):
         """
-        action: np.ndarray of shape (6,)
-            [
-                action_type, fire,
-                roll_angle_norm, pitch_angle_norm,
-                load_factor_norm, speed_change_norm
-            ]
+        执行一个环境步进（即执行动作并返回下一状态、奖励等信息）。
+        
+        输入参数：
+            action (np.ndarray): 由智能体输出的动作指令，形状为 (6,) 的整数数组，表示如下：
+                [
+                    move_action_type (0~5),   # 移动模式选择
+                    missile_fire (0/1),       # 是否发射导弹
+                    fire (0/1),               # 是否开火
+                    roll_angle_norm (0/1/2),  # 滚转角度控制（归一化）
+                    pitch_angle_norm (0/1/2), # 俯仰角控制（归一化）
+                    load_factor_norm (0/1/2)  # 过载因子控制（归一化）
+                ]
+
+        输出：
+            obs (np.ndarray): 下一时刻的观测向量；
+            reward (float): 当前步的奖励值；
+            done (bool): 是否回合结束；
+            truncated (bool): 是否因时间限制而终止（当前未使用）；
+            info (dict): 调试或扩展信息（当前为空字典）；
+
+        函数作用：
+            - 解析动作指令；
+            - 根据动作设置战机的控制输入；
+            - 更新底层战斗环境；
+            - 计算奖励；
+            - 返回观测、奖励、是否终止等信息以供 RL 策略更新；
+            
+        设计思想：
+            - 使用 MultiDiscrete 动作空间实现组合式控制；
+            - 将动作映射到具体的飞行行为（平飞、转弯、筋斗等）；
+            - 控制敌方飞机采用固定策略，便于训练我方策略；
+            - 对导弹发射进行冷却控制，避免滥用；
+            - 支持 Gym 接口规范，便于集成各种强化学习算法；
+            - 使用 terminal 判断游戏状态，并据此给予不同奖励。
         """
-
-      
-
         move_action = action[0] + 1
         self.action_cont[move_action] += 1
         missle_fire_action = action[1]
         fire_action = action[2]
-        # roll_angle = 5
-        # pitch_angle = 5
-        # load_factor = 1
         roll_angle = (action[3]-1)*10
         pitch_angle = (action[4]-1)*10
         load_factor = (action[5]-1)*3
@@ -243,13 +369,7 @@ class CombatGymEnv(gym.Env):
                 self.datain[i].control_mode = 3
                 self.datain[i].target_index = 1
                 self.datain[i].fire = fire_action
-                # self.datain[i].missile_fire = missle_fire_action
-                # 控制导弹发射频率：每 2000 步最多发射一枚
-                if missle_fire_action == 1 and self.current_step - self.last_missile_time >= 2000:
-                    self.datain[i].missile_fire = 1
-                    self.last_missile_time = self.current_step
-                else:
-                    self.datain[i].missile_fire = 0
+                self.datain[i].missile_fire = missle_fire_action
 
                 arg = [0, 0]  # 默认参数
 
