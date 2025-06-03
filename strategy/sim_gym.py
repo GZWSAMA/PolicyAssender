@@ -4,12 +4,16 @@ from gymnasium import spaces
 from env_basic.simulation_env import CombatEnv
 from SimArg import InitialData, FighterDataIn, num_fighter
 from env_basic.action import Action
+from math import sqrt
+import torch
+from torch.distributions import Categorical
+
 
 class CombatGymEnv(gym.Env):
     metadata = {'render_modes': ['human']}
 
     def __init__(self, env: CombatEnv, agent_id=0):
-        super(CombatGymEnv, self).__init__()
+        super(CombatGymEnv, self).__init__() #
         self.combat_env = env
         self.data_initial = InitialData()
         self.datain = [FighterDataIn() for m in range(num_fighter)]
@@ -17,6 +21,8 @@ class CombatGymEnv(gym.Env):
         self.num_opponents = num_fighter - 1  # 对手数量
         self.max_distance = 100000.0  # 归一化参考距离
         self.current_step = 0
+        self.action_cont = {1 : 0, 2 : 0, 3 : 0, 4 : 0, 5 : 0, 6 : 0}
+        self.last_missile_time = -np.inf   # 上次发射导弹的时间
 
         # 定义观测空间维度
         self.obs_dim = 41 + self.num_opponents * 19  # 根据上面推导的公式
@@ -28,12 +34,13 @@ class CombatGymEnv(gym.Env):
         )
 
         # 定义动作空间维度
-        self.action_space = spaces.Box(
-            low=np.array([0.0, 0.0, -1.0, -1.0, -1.0], dtype=np.float32),
-            high=np.array([5.99, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),  
-            shape=(5,),
-            dtype=np.float32
-        )
+        self.action_space = spaces.MultiDiscrete([6, 2, 2, 2, 2, 2], dtype=np.int32)
+        # self.action_space = spaces.Box(
+        #     low=np.array([0.0, 0.0, 0.0, -1.0, -1.0, 0.0], dtype=np.float32),
+        #     high=np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),  
+        #     shape=(6,),
+        #     dtype=np.float32
+        # )
 
     def _get_obs(self):
         # 1. 获取自身状态
@@ -125,13 +132,17 @@ class CombatGymEnv(gym.Env):
     def _calculate_reward(self):
         reward = 0.0
 
+        
+
         # 获取当前观测数据
         self_data = self.data_output[self.agent_id].selfdata
+        self_data_enemy = self.data_output[1].selfdata
         opponent_states = self.data_output[self.agent_id].statedata
         alert_data = self.data_output[self.agent_id].alertdata
 
         if not isinstance(opponent_states, list):
             opponent_states = [opponent_states]
+        
 
         # # 1. 击落敌机：每击落一架 +100 分
         # if hasattr(self, 'prev_opponent_alive'):
@@ -148,40 +159,56 @@ class CombatGymEnv(gym.Env):
 
         # 3. 发射导弹：+1 分（鼓励使用武器）
         if hasattr(self, 'prev_missile_count') and self_data.left_missile < self.prev_missile_count:
-            reward += 1.0
+            reward += 5.0
         self.prev_missile_count = self_data.left_missile
 
+        if self_data_enemy.Missile1State == 3 or self_data_enemy.Missile2State == 3 or self_data_enemy.Missile3State == 3 or self_data_enemy.Missile4State == 3:
+            reward += 2.0
+
+        if self_data.Missile1State == 2  or self_data.Missile2State == 2 or self_data.Missile3State == 2 or self_data.Missile4State == 2:
+            reward += 6.0
+        if self_data.Missile1State == 3 or self_data.Missile2State == 3 or self_data.Missile3State == 3 or self_data.Missile4State == 3:
+            reward -= 0.5
         # 4. 生存奖励：+0.1 / step（鼓励长期存活）
-        reward += 0.1
+        # reward += 0.1
 
         # 5. 导弹告警：检测到导弹威胁时 -1 分（鼓励规避）
         if alert_data.emergency_missile_num > 0:
-            reward -= 1.0
+            reward -= 3.0
 
         # 6. 接近敌机：根据最近敌机的距离给予动态奖励
-        closest_distance = float('inf')
         for enemy in opponent_states:
             if enemy.state_Survive:
                 dx = enemy.state_Longitude[0] - self_data.Longitude
                 dy = enemy.state_Latitude[0] - self_data.Latitude
                 dz = enemy.state_Altitude[0] - self_data.Altitude
                 dist = np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
-                closest_distance = min(closest_distance, dist)
 
-        if closest_distance < 100_000:  # 单位：米
-            reward += 0.01 * (100_000 - closest_distance) / 1000  # 距离越近得分越高
+        if dist > 20.0:
+            reward += 100.0 * sqrt(1/(dist+20))  # 距离越近得分越高
 
         # 7. 姿态与能量控制（可选）：
-        speed = self_data.GroundSpeed
-        altitude = self_data.Altitude
-        energy = speed * speed + altitude * 9.8  # 简化动能+势能
-        if hasattr(self, 'prev_energy'):
-            energy_diff = energy - self.prev_energy
-            reward += 0.001 * energy_diff  # 微弱奖励能量提升
-        self.prev_energy = energy
+        # speed = self_data.GroundSpeed
+        # altitude = self_data.Altitude
+        # energy = speed * speed + altitude * 9.8  # 简化动能+势能
+        # if hasattr(self, 'prev_energy'):
+        #     energy_diff = energy - self.prev_energy
+        #     reward += 0.01 * energy_diff  # 微弱奖励能量提升
+        # self.prev_energy = energy
+
+        if self.action_cont[2] >= 100:
+            reward -= 1.0
+            self.action_cont[2] = 0
+        
+        punish_list = [1,3,4,5,6]
+        for i in punish_list:
+            if self.action_cont[i] >= 100:
+                reward -= 3.0
+                self.action_cont[i] = 0
 
         return float(reward)
     
+   
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.data_output = self.combat_env.reset(self.data_initial, self.datain)
@@ -197,70 +224,81 @@ class CombatGymEnv(gym.Env):
             ]
         """
 
-        move_action = int(np.clip(action[0], 0, 5))           # 动作类型
-        fire_action = int(np.clip(action[1], 0, 1))           # 发射导弹
+      
 
-        # 参数解归一化
-        roll_angle = np.clip(action[2] * 60.0, -60.0, 60.0)        # [-60, 60]
-        pitch_angle = np.clip(action[3] * 30.0, -30.0, 30.0)       # [-30, 30]
-        load_factor = np.clip((action[4] + 1.0) * 3.0 + 2.0, 2.0, 8.0)  # [2, 8]
+        move_action = action[0] + 1
+        self.action_cont[move_action] += 1
+        missle_fire_action = action[1]
+        fire_action = action[2]
+        # roll_angle = 5
+        # pitch_angle = 5
+        # load_factor = 1
+        roll_angle = (action[3]-1)*10
+        pitch_angle = (action[4]-1)*10
+        load_factor = (action[5]-1)*3
 
         for i in range(num_fighter):
             if i == self.agent_id:
                 # 设置战机控制模式
                 self.datain[i].control_mode = 3
                 self.datain[i].target_index = 1
-                self.datain[i].fire = 1
-                self.datain[i].missile_fire = fire_action
+                self.datain[i].fire = fire_action
+                # self.datain[i].missile_fire = missle_fire_action
+                # 控制导弹发射频率：每 2000 步最多发射一枚
+                if missle_fire_action == 1 and self.current_step - self.last_missile_time >= 2000:
+                    self.datain[i].missile_fire = 1
+                    self.last_missile_time = self.current_step
+                else:
+                    self.datain[i].missile_fire = 0
 
                 arg = [0, 0]  # 默认参数
 
-                if move_action == 0:  # 平飞
+                if move_action == 1:  # 平飞
                     self.datain[i].control_input = [1, 1/9, 0, 0]
 
-                elif move_action == 1:  # 速度追踪
+                elif move_action == 2:  # 速度追踪
                     # 使用 speed_change 控制速度变化
                     arg = [0, 0]
                     self.datain[i].control_input = Action(i).action_choose(
                         env=self.combat_env,
                         target=self.datain[i].target_index,
-                        action_index=move_action,
+                        action_index=2,
                         arg=arg
                     )
 
-                elif move_action == 2:  # 转弯
+                elif move_action == 3:  # 转弯
                     arg = [roll_angle, 0]
                     self.datain[i].control_input = Action(i).action_choose(
                         env=self.combat_env,
                         target=self.datain[i].target_index,
-                        action_index=move_action,
+                        action_index=3,
                         arg=arg
                     )
 
-                elif move_action == 3:  # 倾角追踪
+                elif move_action == 4:  # 倾角追踪
                     arg = [pitch_angle, 0]
                     self.datain[i].control_input = Action(i).action_choose(
                         env=self.combat_env,
                         target=self.datain[i].target_index,
-                        action_index=move_action,
+                        action_index=4,
                         arg=arg
                     )
 
-                elif move_action == 4:  # 盘旋
+                elif move_action == 5:  # 盘旋
                     arg = [pitch_angle, roll_angle]
                     self.datain[i].control_input = Action(i).action_choose(
                         env=self.combat_env,
                         target=self.datain[i].target_index,
-                        action_index=move_action,
+                        action_index=5,
                         arg=arg
                     )
 
-                elif move_action == 5:  # 筋斗
+                elif move_action == 6:  # 筋斗
                     arg = [load_factor, 0]
                     self.datain[i].control_input = Action(i).action_choose(
                         env=self.combat_env,
                         target=self.datain[i].target_index,
-                        action_index=move_action,
+                        action_index=6,
                         arg=arg
                     )
 
@@ -269,14 +307,14 @@ class CombatGymEnv(gym.Env):
 
             elif i == 1:
                 # 固定策略控制 i == 1 飞机
-                self.datain[i].control_mode = 2
+                self.datain[i].control_mode = 3
                 self.datain[i].target_index = 0
                 self.datain[i].fire = 1
                 arg = [0, 0]
                 self.datain[i].control_input = Action(i).action_choose(
                     env=self.combat_env,
                     target=self.datain[i].target_index,
-                    action_index=self.datain[i].control_mode,
+                    action_index=2,
                     arg=arg
                 )
                 if self.current_step % 3000 == 0:
@@ -285,18 +323,24 @@ class CombatGymEnv(gym.Env):
                     self.datain[i].missile_fire = 0
 
         terminal, self.data_output = self.combat_env.update(self.datain)
-        reward = self._calculate_reward()
-        if terminal == 2:  # 战斗结束
-            reward += 100
         if self.current_step >= self.data_initial.len_max:
             terminal = 0
+        reward = self._calculate_reward()
+        if terminal == 2:  # 战斗结束
+            reward += 500
+        elif terminal == 1:
+            reward -= 100
+        elif terminal == 0:
+            reward -= 20
         done = bool(terminal >= 0)
         truncated = False
         obs = self._get_obs()
         self.current_step += 1 
-        # print(f"current_step: {self.current_step}, reward: {reward}, done: {done}")
+        # print(f"action count: {self.action_cont}, missle action: {missle_fire_action}, reward: {reward}, left_missles: {self.data_output[self.agent_id].selfdata.left_missile}")
+        # print(f"current_step: {self.current_step}, action: {move_action}, reward: {reward}, missle action: {missle_fire_action}")
 
         return obs, reward, done, truncated, {}
+    
     def render(self):
         pass
 

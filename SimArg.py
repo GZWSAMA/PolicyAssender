@@ -3,7 +3,7 @@ import random
 fighter_str = '.\MultiFighter.dll'
 missile_str = '.\close_middle_py.dll'
 epoch_max = 1               # 设定仿真轮次
-len_max = 18000             # 单轮仿真的步长上限
+len_max = 30000             # 单轮仿真的步长上限
 
 num_blue = 1                 # 设定蓝色机数量
 num_red = 1                  # 设定红色机数量
@@ -30,10 +30,11 @@ class InitialData(object):
         # 初始位置（北东地）
         self.NED = []
         h = random.randint(8000, 12000)
+        distance = random.randint(30000, 80000) #随机两机初始距离
         for i in range(self.num_blue):
             self.NED.append([0, 1000 * i, -h])
         for i in range(self.num_blue):
-            self.NED.append([0, 1000 * i + 15000, -h])
+            self.NED.append([0, 1000 * i + distance, -h])
 
         # 初始速度（马赫数）
         self.ma = []
@@ -41,10 +42,17 @@ class InitialData(object):
             ma = random.uniform(0.8, 1.2)
             self.ma.append(ma)
 
+
         # 初始航向（0度为北向）
         self.orientation = []
-        for i in range(self.num_blue + self.num_red):
-            self.orientation.append(0)
+        # 蓝方战机随机初始航向：0 ~ 180 度
+        # for i in range(self.num_blue):
+        #   self.orientation.append(random.uniform(0, 180))
+        # 蓝方战机初始航向为80度
+        self.orientation.append(80)
+        # 红方战机随机初始航向：0 ~ -180 度
+        for i in range(self.num_red):
+          self.orientation.append(random.uniform(-180, 0))
 
         # 初始化控制模式
         # 控制模式3：[油门， 期望机体法向过载， 期望机体滚转速率， 无意义补充位]
